@@ -822,22 +822,29 @@ function drawWires(){
 }
 function renderConstellation(units0, meta, deleted0){
   const deleted = deleted0 || [];
-  // 空账号（没有任何光暗胎五）：保持空状态，仅更新文案后返回
+  // 空账号（没有任何光暗胎五）：保持空状态，但保留 tab 栏（符文测分可用）
   if(units0.length === 0 && deleted.length === 0){
+    window.__noLD5 = true;
     const es0 = document.getElementById('empty-state');
     if(es0){
       es0.hidden = false;
       const et0 = es0.querySelector('.empty-title');
       if(et0) et0.textContent = '该账号暂无光暗胎五记录';
     }
-    document.getElementById('view-tabs').hidden = true;
+    // 显示 tab 栏，让用户可以切换到「符文测分」
+    const vt0 = document.getElementById('view-tabs');
+    if(vt0) vt0.hidden = false;
     document.getElementById('page-footer').hidden = true;
+    // 隐藏星图/年柱面板（无内容）
+    document.getElementById('years').hidden = true;
+    document.getElementById('year-list').hidden = true;
     document.title = '光暗出货记录 · ' + meta.name;
     const sub0 = document.getElementById('subtitle');
     if(sub0) sub0.innerHTML = esc(meta.name) + ' <span class="since">（数据截至 ' + meta.until + '）</span>';
     return;
   }
   // 有数据：隐藏空状态、显示视图切换与页脚
+  window.__noLD5 = false;
   const es = document.getElementById('empty-state');
   if(es) es.hidden = true;
   const vt = document.getElementById('view-tabs');
@@ -2022,7 +2029,9 @@ function handleFile(file){
       if(window.__view === 'rune') renderRuneCheck();
     }catch(rkErr){ console.warn('rune check build failed', rkErr); }
     if(units.length === 0 && deleted.length === 0){
-      showToast('解析成功，但该账号没有可入账的光暗胎五召唤记录。', true);
+      // 无光暗五：自动切换到符文测分，让用户直接看到质检报告
+      setView('rune');
+      showToast('该账号暂无光暗胎五记录，已切换到符文测分。', true);
     } else {
       let msg = '已根据「' + name + '」的账号数据重新生成出货记录：共 ' + units.length + ' 只光暗胎五。';
       if(deleted.length > 0) msg += '另有 ' + deleted.length + ' 只曾召唤后已删除（图鉴可考）。';
@@ -2363,16 +2372,34 @@ function renderRuneCheck(){
   window.setView = function(view){
     var tabRk = document.getElementById('tab-rune');
     var panelRune = document.getElementById('rune-check');
-    if(tabRk && panelRune){
-      if(view === 'rune'){
-        tabRk.classList.add('active');
-      } else {
-        tabRk.classList.remove('active');
-      }
-      panelRune.hidden = (view !== 'rune');
+    var tabYear = document.getElementById('tab-year');
+    var tabStar = document.getElementById('tab-star');
+    var starPanel = document.getElementById('years');
+    var yearPanel = document.getElementById('year-list');
+    var es = document.getElementById('empty-state');
+    if(view === 'rune'){
+      // 切到符文测分：隐藏星图/年柱/空状态，显示符文面板
+      if(tabRk) tabRk.classList.add('active');
+      if(tabYear) tabYear.classList.remove('active');
+      if(tabStar) tabStar.classList.remove('active');
+      if(panelRune) panelRune.hidden = false;
+      if(starPanel) starPanel.hidden = true;
+      if(yearPanel) yearPanel.hidden = true;
+      if(es) es.hidden = true;
+      window.__view = 'rune';
+      renderRuneCheck();
+      return;
     }
-    if(view === 'rune'){ renderRuneCheck(); return; }
+    // 切回年柱/星图：隐藏符文面板
+    if(tabRk) tabRk.classList.remove('active');
+    if(panelRune) panelRune.hidden = true;
     if(origSetView) origSetView(view);
+    // 空账号（无光暗五）：恢复空状态，隐藏星图/年柱面板
+    if(window.__noLD5){
+      if(es) es.hidden = false;
+      if(starPanel) starPanel.hidden = true;
+      if(yearPanel) yearPanel.hidden = true;
+    }
   };
   var tr = document.getElementById('tab-rune');
   if(tr) tr.addEventListener('click', function(){ setView('rune'); });
