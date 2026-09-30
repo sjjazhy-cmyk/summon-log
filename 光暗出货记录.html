@@ -425,6 +425,23 @@
   }
   .rk-note-t{font-size:12px;font-weight:800;color:var(--text-faint);letter-spacing:2px;margin-bottom:8px;}
   .rk-note p{font-size:11.5px;color:var(--text-faint);line-height:1.8;}
+  /* swkit 词条引擎面板 */
+  .rk-sk-grade{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 14px;}
+  .rk-sk-g{flex:1 1 auto;min-width:84px;text-align:center;font-size:12px;font-weight:800;letter-spacing:1px;
+    border-radius:8px;padding:6px 8px;border:1px solid;}
+  .rk-sk-elite{color:#ffd97a;border-color:rgba(245,197,66,.4);background:rgba(245,197,66,.1);}
+  .rk-sk-good{color:#7de3ae;border-color:rgba(90,200,140,.4);background:rgba(90,200,140,.1);}
+  .rk-sk-usable{color:#7fd6ff;border-color:rgba(84,190,232,.4);background:rgba(84,190,232,.1);}
+  .rk-sk-weak{color:#b9b4c9;border-color:rgba(160,160,175,.3);background:rgba(160,160,175,.08);}
+  .rk-sk-arch{display:flex;flex-direction:column;gap:7px;margin:4px 0 12px;}
+  .rk-sk-bar{display:flex;align-items:center;gap:8px;}
+  .rk-sk-bar-ic{flex:0 0 auto;width:22px;text-align:center;font-size:15px;}
+  .rk-sk-bar-name{flex:0 0 auto;width:58px;font-size:12px;color:var(--text-sub);font-weight:700;white-space:nowrap;}
+  .rk-sk-bar-track{flex:1 1 auto;height:8px;border-radius:4px;background:rgba(242,238,248,.07);overflow:hidden;}
+  .rk-sk-bar-fill{display:block;height:100%;border-radius:4px;min-width:2px;transition:width .4s;}
+  .rk-sk-bar-num{flex:0 0 auto;font-size:12px;color:var(--text);font-weight:800;font-family:"Segoe UI","Consolas",monospace;}
+  .rk-sk-bar-score{flex:0 0 auto;font-size:12px;color:var(--text-faint);font-family:"Segoe UI","Consolas",monospace;}
+  .rk-sk-foot{font-size:11px;color:var(--text-faint);line-height:1.7;letter-spacing:.5px;border-top:1px dashed rgba(242,238,248,.08);padding-top:8px;}
   @media (max-width:760px){
     .rk-overview{flex-direction:column;}
     .rk-hero-num{font-size:30px;}
@@ -2235,6 +2252,129 @@ function rkArtifactScore(a){
 
 // ---- 全量打分入口 ----
 var RK_REPORT = null;
+// ============================================================
+// swkit 词条引擎（集成自 swkit.fun V4.4/Beta 公开前端逻辑）
+// 词条换算 + 六原型权重 + 保留判定（与页面 swranking 评分互补）
+// 字段口径：SWEX JSON 原始格式（sec_eff=[id,val,gem,grind], class 6=普通/16=远古）
+// ============================================================
+var SK_NORM_AVG = {1:255, 2:6.5, 3:15, 4:6.5, 5:15, 6:6.5, 8:5, 9:5, 10:5.5, 11:6, 12:6};
+var SK_ANCIENT_AVG = {1:300, 2:8, 3:18, 4:8, 5:18, 6:8, 8:6, 9:6, 10:7, 11:8, 12:8};
+var SK_STAT_NAMES = {1:'固定体力', 2:'体力%', 3:'固定攻击', 4:'攻击%', 5:'固定防御', 6:'防御%', 8:'速度', 9:'暴击率', 10:'暴击伤害', 11:'抵抗', 12:'命中'};
+var SK_ARCHETYPES = [
+  { key:'spd', name:'速度核心', emoji:'🚀', w:{8:1, 12:.5, 11:.5, 2:.45, 6:.45, 4:.45, 9:.3, 10:.3, 1:.1, 3:.1, 5:.1}, mains:[8,2,4,6], sets:[3,13] },
+  { key:'nuke', name:'暴力输出', emoji:'⚔️', w:{9:1, 10:1, 4:.9, 8:.6, 3:.2, 2:.15, 6:.1, 12:.1, 11:.1, 1:.05, 5:.05}, mains:[9,10,4,2], sets:[4,8,11,5] },
+  { key:'acc', name:'命中破', emoji:'🎯', w:{12:1, 8:.8, 2:.55, 6:.45, 4:.4, 11:.3, 9:.2, 10:.2, 1:.15, 5:.15}, mains:[12,8,2,6], sets:[22] },
+  { key:'res', name:'抵抗控场', emoji:'🛡️', w:{11:1, 8:.8, 2:.6, 6:.5, 12:.35, 4:.3, 1:.2, 5:.2}, mains:[11,8,2,6], sets:[10,15,23] },
+  { key:'tank', name:'肉盾续航', emoji:'💚', w:{2:1, 6:.9, 8:.6, 11:.5, 12:.35, 1:.35, 5:.35, 4:.2}, mains:[2,6,8], sets:[16,7,2] },
+  { key:'defdmg', name:'防御打手', emoji:'🪨', w:{6:1, 10:.85, 9:.75, 8:.6, 5:.3, 2:.2, 4:.2}, mains:[6,9,10], sets:[4,8,5] }
+];
+var SK_FIXED_MAIN = {1:1, 3:1, 5:1};  // 1/3/5 号位主属固定
+var SK_CORE_SETS = {10:1, 13:1, 15:1};  // 绝望/暴走/意志（swkit 源码 [10,13,15]，攻防冲突宽容）
+
+// 词条换算：floor(value/满值*10)/10，最小 0.1
+function skRollsFor(id, val, ancient){
+  var MAXL = ancient ? SK_ANCIENT_AVG : SK_NORM_AVG;
+  var m = MAXL[id] || 0;
+  if(!m) return 0;
+  var r = Math.floor(val / m * 10) / 10;
+  if(val > 0 && r < 0.1) r = 0.1;
+  return r;
+}
+
+// 单符文 swkit 分析（词条 + 冲突 + 六原型有用分）
+function skAnalyzeRune(r){
+  var ancient = !!(r.class === 16);
+  var mainId = r.pri_eff ? r.pri_eff[0] : 0;
+  var isCore = !!SK_CORE_SETS[r.set_id];
+  var processed = [];
+  var total = 0, i, s;
+  var se = r.sec_eff || [];
+  for(i = 0; i < se.length; i++){
+    s = se[i];
+    if(!s || !s[0]) continue;
+    var id = s[0], val = s[1] || 0, grind = s[3] || 0;
+    var v = val + grind;
+    var conflict = false;
+    if((mainId === 5 || mainId === 6) && (id === 3 || id === 4)) conflict = true;
+    if((mainId === 3 || mainId === 4) && (id === 5 || id === 6)) conflict = true;
+    if(isCore && ((mainId === 6 && id === 4) || (mainId === 4 && id === 6))) conflict = false;
+    var rolls = conflict ? 0 : skRollsFor(id, v, ancient);
+    processed.push({ id: id, name: SK_STAT_NAMES[id] || ('#' + id), val: v, rolls: rolls, conflict: conflict });
+    if(!conflict) total += rolls;
+  }
+  // 前缀（innate）：无冲突直接计入
+  var pf = r.prefix_eff;
+  if(pf && pf[0] && pf[0] !== 0){
+    var pid = pf[0], pv = pf[1] || 0;
+    var prolls = skRollsFor(pid, pv, ancient);
+    processed.push({ id: pid, name: SK_STAT_NAMES[pid] || ('#' + pid), val: pv, rolls: prolls, conflict: false, innate: true });
+    total += prolls;
+  }
+  total = Math.round(total * 10) / 10;
+
+  // 六原型有用分（swkit Beta 口径：Σ 副属性词条×原型权重 × 主属契合 × 套装契合）
+  var best = null, bestScore = -1, breakdown = {};
+  for(i = 0; i < SK_ARCHETYPES.length; i++){
+    var arch = SK_ARCHETYPES[i];
+    var sc = 0;
+    for(var j = 0; j < processed.length; j++){
+      var p = processed[j];
+      if(p.conflict) continue;
+      sc += p.rolls * (arch.w[p.id] || 0);
+    }
+    var fixed = !!SK_FIXED_MAIN[r.slot_no];
+    var mainFit = fixed ? 1 : (arch.mains.indexOf(mainId) >= 0 ? 1 : 0.62);
+    var setFit = arch.sets.indexOf(r.set_id) >= 0 ? 1.08 : 1;
+    var d = sc * mainFit * setFit;
+    breakdown[arch.key] = d;
+    if(d > bestScore){ bestScore = d; best = arch; }
+  }
+  return {
+    rolls: total, processed: processed, ancient: ancient,
+    archetype: best, usefulScore: Math.max(0, Math.round(bestScore * 100) / 100),
+    breakdown: breakdown
+  };
+}
+
+// 汇总统计（在 rkBuildReport 内调用）
+function skBuildSummary(allRunes){
+  var results = [];
+  var up12 = [], i;
+  for(i = 0; i < allRunes.length; i++){
+    var r = allRunes[i];
+    var an = skAnalyzeRune(r);
+    r._sk = an;
+    results.push(an);
+    if((r.upgrade_curr || 0) >= 12) up12.push(an);
+  }
+  // 原型分布（满 +12 符文）
+  var archCnt = { spd:0, nuke:0, acc:0, res:0, tank:0, defdmg:0 };
+  var archScore = { spd:0, nuke:0, acc:0, res:0, tank:0, defdmg:0 };
+  for(i = 0; i < up12.length; i++){
+    var a = up12[i];
+    if(a.archetype) { archCnt[a.archetype.key]++; archScore[a.archetype.key] += a.usefulScore; }
+  }
+  // 有用分分布（满分 12 符文）：极品 ≥7 / 优秀 ≥4.5 / 可用 ≥2.5 / 一般 <2.5
+  var grade = { elite: 0, good: 0, usable: 0, weak: 0 };
+  for(i = 0; i < up12.length; i++){
+    var u = up12[i].usefulScore;
+    if(u >= 7) grade.elite++;
+    else if(u >= 4.5) grade.good++;
+    else if(u >= 2.5) grade.usable++;
+    else grade.weak++;
+  }
+  var totalRolls = 0;
+  for(i = 0; i < allRunes.length; i++) totalRolls += allRunes[i]._sk.rolls;
+  return {
+    total: allRunes.length,
+    analyzed: up12.length,
+    avgRolls: allRunes.length ? Math.round(totalRolls / allRunes.length * 10) / 10 : 0,
+    avgUseful: up12.length ? Math.round(up12.reduce(function(p, c){ return p + c.usefulScore; }, 0) / up12.length * 10) / 10 : 0,
+    archCnt: archCnt, archScore: archScore,
+    grade: grade
+  };
+}
+
 function rkBuildReport(json){
   var units = json.unit_list || [];
   var allRunes = [];
@@ -2383,13 +2523,17 @@ function rkBuildReport(json){
   ranked.sort(function(a, b){ return b.avg - a.avg; });
   for(i = 0; i < Math.min(20, ranked.length); i++) topMonsters.push(ranked[i]);
 
+  // swkit 词条引擎汇总（在 rkBuildReport 内计算，随报告返回）
+  var skSummary = skBuildSummary(allRunes);
+
   return {
     runeCount: allRunes.length, equippedCount: eqRunes.length,
     setScores: setScores, allScore: allScore,
     swiftAvg: swiftAvg, violentAvg: violentAvg, despairAvg: despairAvg,
     leftArt: leftArt, rightArt: rightArt, artifactTotal: artifactTotal, artifactCount: eqArts.length,
     monsterScore: monsterScore, matchedRtaCount: matchedRtaCount, tierCnt: tierCnt, rtaMonList: rtaMonList,
-    topMonsters: topMonsters
+    topMonsters: topMonsters,
+    skSummary: skSummary
   };
 }
 
@@ -2440,6 +2584,43 @@ function renderRuneCheck(){
   html += rkRow('<span class="rk-set rk-set-rev">反</span>', '反击套装评分 · ' + R.setScores.revenge.n + ' 件', R.setScores.revenge.top12, 'revenge');
   html += rkRow('<span class="rk-set rk-set-any">其</span>', '其它套装评分 · ' + R.setScores.other.n + ' 件', R.setScores.other.top12, 'other');
   html += '</section>';
+
+  // === swkit 词条引擎（V4.4/Beta 口径：词条换算 + 六原型分布 + 品质分级）===
+  var SK = R.skSummary;
+  if(SK){
+    var SK_ARCH_ORDER = [
+      { key:'spd', cn:'速度核心', emoji:'🚀', color:'#ff5f8f' },
+      { key:'nuke', cn:'暴力输出', emoji:'⚔️', color:'#ff9f43' },
+      { key:'acc', cn:'命中破', emoji:'🎯', color:'#ffd15c' },
+      { key:'res', cn:'抵抗控场', emoji:'🛡️', color:'#7fd88f' },
+      { key:'tank', cn:'肉盾续航', emoji:'💚', color:'#4ecdc4' },
+      { key:'defdmg', cn:'防御打手', emoji:'🪨', color:'#8fa3c8' }
+    ];
+    html += '<section class="rk-card"><div class="rk-card-head">swkit 词条引擎<span class="rk-card-g">' + rkImg(RK_IMG.runes, 18, 18, 'swkit') + '</span></div>';
+    html += '<div class="rk-sub">基于 swkit.fun 公开引擎（词条换算 + 六原型 Beta 权重）：共 ' + SK.analyzed + ' 枚满级符文（+12）参与分析</div>';
+    // 品质分级
+    html += '<div class="rk-sk-grade">'
+      + '<span class="rk-sk-g rk-sk-elite">极品 ' + SK.grade.elite + '</span>'
+      + '<span class="rk-sk-g rk-sk-good">优秀 ' + SK.grade.good + '</span>'
+      + '<span class="rk-sk-g rk-sk-usable">可用 ' + SK.grade.usable + '</span>'
+      + '<span class="rk-sk-g rk-sk-weak">一般 ' + SK.grade.weak + '</span>'
+      + '</div>';
+    // 原型分布条
+    html += '<div class="rk-sk-arch">';
+    for(var ai = 0; ai < SK_ARCH_ORDER.length; ai++){
+      var ak = SK_ARCH_ORDER[ai], n = SK.archCnt[ak.key] || 0, sc = SK.archScore[ak.key] || 0;
+      var pct = SK.analyzed ? Math.round(n / SK.analyzed * 100) : 0;
+      html += '<div class="rk-sk-bar"><span class="rk-sk-bar-ic" style="color:' + ak.color + '">' + ak.emoji + '</span>'
+        + '<span class="rk-sk-bar-name">' + ak.cn + '</span>'
+        + '<span class="rk-sk-bar-track"><span class="rk-sk-bar-fill" style="width:' + pct + '%;background:' + ak.color + '"></span></span>'
+        + '<span class="rk-sk-bar-num">' + n + ' 件</span>'
+        + '<span class="rk-sk-bar-score">' + sc.toFixed(1) + '</span></div>';
+    }
+    html += '</div>';
+    html += '<div class="rk-sk-foot">平均词条 ' + SK.avgRolls.toFixed(1) + ' / 平均有用分 ' + SK.avgUseful.toFixed(1)
+      + ' · 词条换算：floor(副属性值 ÷ 满值 × 10) ÷ 10；有用分 = Σ(词条×原型权重) × 主属契合 × 套装契合</div>';
+    html += '</section>';
+  }
 
   // === 阵容评级（RTA 图鉴评级：命中魔灵的 aiScore²贡献排行）===
   var TIER_NAME = ['SS', 'S', 'A', 'B', 'C', 'D'];
