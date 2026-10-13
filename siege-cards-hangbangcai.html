@@ -24,6 +24,7 @@ body { background: #1a1a2e; color: #e0e0e0; font-family: "Microsoft YaHei", "Seg
   border: 1px solid rgba(255,215,0,0.4); }
 #lock button:hover { background: rgba(255,215,0,0.25); }
 #lock .err { color: #ef5350; font-size: 12px; margin-top: 10px; min-height: 16px; }
+#lock .dl { color: #7d8dff; font-size: 11px; margin-top: 10px; min-height: 14px; }
 #lock .hint { font-size: 11px; color: #555; margin-top: 16px; }
 #frame { position: fixed; inset: 0; width: 100%; height: 100%; border: none; display: none; z-index: 5; }
 #topbar { position: fixed; top: 18px; right: 20px; z-index: 20; display: none;
@@ -50,6 +51,7 @@ body { background: #1a1a2e; color: #e0e0e0; font-family: "Microsoft YaHei", "Seg
     <p>请输入访问密码解锁内容<br>内容在您的浏览器本地解密, 不会上传到任何服务器</p>
     <input type="password" id="pw" placeholder="输入密码" autocomplete="off">
     <button onclick="unlock()">解锁</button>
+    <div class="dl" id="dl"></div>
     <div class="err" id="err"></div>
     <div class="hint">密码错误时不会显示任何内容提示以外的信息</div>
   </div>
@@ -76,10 +78,33 @@ function tip(msg, cls, show) {
   t.style.display = 'block';
 }
 
-async function fetchPayload() {
+function fmtBytes(loaded) { return (loaded / 1048576).toFixed(1) + ' MB'; }
+function fmtPct(loaded, total) {
+  var s = '正在下载数据 ' + fmtBytes(loaded);
+  if (total) s += ' / ' + fmtBytes(total) + ' (' + Math.round(loaded / total * 100) + '%)';
+  return s;
+}
+
+async function fetchPayload(onProgress) {
   var r = await fetch(_DATA_URL + '?t=' + Date.now(), { cache: 'no-store' });
   if (!r.ok) throw new Error('HTTP ' + r.status);
-  return r.json();
+  var total = parseInt(r.headers.get('Content-Length') || '0', 10);
+  var chunks = [];
+  var loaded = 0;
+  var reader = r.body.getReader();
+  while (true) {
+    var res = await reader.read();
+    if (res.done) break;
+    if (res.value) {
+      chunks.push(res.value);
+      loaded += res.value.length;
+      if (onProgress) onProgress(loaded, total);
+    }
+  }
+  var all = new Uint8Array(loaded);
+  var o = 0;
+  for (var i = 0; i < chunks.length; i++) { all.set(chunks[i], o); o += chunks[i].length; }
+  return JSON.parse(new TextDecoder().decode(all));
 }
 
 async function deriveKey(pw, saltB64) {
@@ -113,7 +138,10 @@ async function unlock() {
   err.textContent = '';
   if (!pw) { err.textContent = '请输入密码'; return; }
   try {
-    var D = await fetchPayload();
+    var dl = $('dl');
+    dl.textContent = '正在下载数据...';
+    var D = await fetchPayload(function(loaded, total) { dl.textContent = fmtPct(loaded, total); });
+    dl.textContent = '数据下载完成, 正在解密...';
     var html = await decryptPayload(D, pw);
     _pwKeep = pw;      // 解锁成功后暂存, 供后续刷新 (仅本窗口存活)
     showContent(html);
@@ -127,9 +155,10 @@ async function doRefresh() {
   if (!_pwKeep) return;
   var btn = $('refreshBtn');
   btn.classList.add('loading');
-  tip('正在拉取最新数据...', '');
+  tip('正在下载最新数据...', '');
   try {
-    var D = await fetchPayload();
+    var D = await fetchPayload(function(loaded, total) { tip(fmtPct(loaded, total)); });
+    tip('数据下载完成, 正在解密...', '');
     var html = await decryptPayload(D, _pwKeep);
     // 记滚动位置 (页面在 iframe 内)
     var f = $('frame');
