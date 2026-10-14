@@ -115,12 +115,35 @@ async function deriveKey(pw, saltB64) {
     km, {name: 'AES-GCM', length: 256}, false, ['decrypt']);
 }
 
+async function gunzip(buf) {
+  // 2026-10-14: 数据包已先 gzip 压缩再加密, 解密后需解压还原 (DecompressionStream)
+  if (typeof DecompressionStream === 'undefined') {
+    throw new Error('当前浏览器不支持 gzip 解压, 请使用新版浏览器');
+  }
+  var ds = new DecompressionStream('gzip');
+  var reader = new Blob([buf]).stream().pipeThrough(ds).getReader();
+  var chunks = [];
+  var total = 0;
+  while (true) {
+    var res = await reader.read();
+    if (res.done) break;
+    chunks.push(res.value);
+    total += res.value.length;
+  }
+  var out = new Uint8Array(total);
+  var o = 0;
+  for (var i = 0; i < chunks.length; i++) { out.set(chunks[i], o); o += chunks[i].length; }
+  return out;
+}
+
 async function decryptPayload(D, pw) {
   var key = await deriveKey(pw, D.s);
   var pt = await crypto.subtle.decrypt(
     {name: 'AES-GCM', iv: new Uint8Array(b64s(D.n)), tagLength: 128},
     key, new Uint8Array(b64s(D.c).concat(b64s(D.t))));
-  return new TextDecoder().decode(pt);
+  var bytes = new Uint8Array(pt);
+  if (D.g) bytes = await gunzip(bytes);
+  return new TextDecoder().decode(bytes);
 }
 
 function showContent(html) {
