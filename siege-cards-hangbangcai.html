@@ -188,7 +188,7 @@ async function unlock() {
     _pwKeep = null;
     var m = String(e);
     if (m.indexOf('HTTP') === 0) err.textContent = '数据拉取失败: ' + e + ' (请稍后重试)';
-    else if (m.indexOf('NETWORK_FAILED') === 0) err.textContent = '数据下载失败: 网络连接不稳定, 已自动重试仍失败, 请再次点击解锁';
+    else if (m.indexOf('NETWORK_FAILED') >= 0) err.textContent = '数据下载失败: 网络连接不稳定, 已自动重试仍失败, 请再次点击解锁';
     else err.textContent = '密码错误或解密失败';
   }
 }
@@ -214,7 +214,7 @@ async function doRefresh() {
   } catch (e) {
     var m = String(e);
     if (m.indexOf('HTTP') === 0) tip('刷新失败: 数据拉取失败(稍后再试)', 'err');
-    else if (m.indexOf('NETWORK_FAILED') === 0) tip('刷新失败: 网络连接不稳定, 已自动重试仍失败, 请稍后再试', 'err');
+    else if (m.indexOf('NETWORK_FAILED') >= 0) tip('刷新失败: 网络连接不稳定, 已自动重试仍失败, 请稍后再试', 'err');
     else tip('刷新失败: 解密失败(请重新解锁)', 'err');
   }
   btn.classList.remove('loading');
