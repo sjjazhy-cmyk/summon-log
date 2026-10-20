@@ -65,10 +65,50 @@ body { background: #1a1a2e; color: #e0e0e0; font-family: "Microsoft YaHei", "Seg
 <iframe id="frame" title="content"></iframe>
 <script>
 var _DATA_URL = './SIEGE_DATA_MENGDIE.bin';
+var _VER_URL = './SIEGE_VERSION_MENGDIE.json';
+var _CACHE_KEY = 'pSIEGE_DATA_MENGDIE.bin';
 var _PBKDF_ROUNDS = 150000;
 var _pwKeep = null;      // 仅存窗口内存变量, 不落盘
 function $(id) { return document.getElementById(id); }
 function b64s(b) { return atob(b).split('').map(function(c){return c.charCodeAt(0);}); }
+
+// ---------- v3.1: 本地缓存 (IndexedDB 存密文, 两公会页面同源共用库不同 key) ----------
+var _db = null;
+function idbOpen() {
+  if (_db) return Promise.resolve(_db);
+  return new Promise(function(resolve, reject) {
+    try {
+      var rq = indexedDB.open('siege_cache', 1);
+      rq.onupgradeneeded = function(e) { e.target.result.createObjectStore('kv'); };
+      rq.onsuccess = function(e) { _db = e.target.result; resolve(_db); };
+      rq.onerror = function() { reject(new Error('IDB_OPEN_FAILED')); };
+    } catch (e) { reject(e); }
+  });
+}
+function idbGet(k) {
+  return idbOpen().then(function(db) {
+    return new Promise(function(resolve) {
+      try {
+        var rq = db.transaction('kv', 'readonly').objectStore('kv').get(k);
+        rq.onsuccess = function(e) { resolve(e.target.result || null); };
+        rq.onerror = function() { resolve(null); };
+      } catch (e) { resolve(null); }
+    });
+  }).catch(function() { return null; });
+}
+function idbSet(k, v) {
+  return idbOpen().then(function(db) {
+    return new Promise(function(resolve) {
+      try {
+        var tx = db.transaction('kv', 'readwrite');
+        tx.objectStore('kv').put(v, k);
+        tx.oncomplete = function() { resolve(true); };
+        tx.onerror = function() { resolve(false); };
+        tx.onabort = function() { resolve(false); };
+      } catch (e) { resolve(false); }
+    });
+  }).catch(function() { return false; });
+}
 
 function tip(msg, cls, show) {
   var t = $('tip');
@@ -108,7 +148,7 @@ async function fetchPayload(onProgress, onRetry) {
       var all = new Uint8Array(loaded);
       var o = 0;
       for (var i = 0; i < chunks.length; i++) { all.set(chunks[i], o); o += chunks[i].length; }
-      return JSON.parse(new TextDecoder().decode(all));
+      return new TextDecoder().decode(all);   // v3.1: 返回密文原文, 由 loadPayload 统一解析与缓存
     } catch (e) {
       lastErr = e;
       if (String(e).indexOf('HTTP') === 0) throw e;
@@ -119,6 +159,46 @@ async function fetchPayload(onProgress, onRetry) {
     }
   }
   throw new Error('NETWORK_FAILED');
+}
+
+async function fetchVersion() {
+  // v3.1: 版本文件百字节级, 弱网也快; 失败自动重试, 仍失败返回 null 走降级
+  for (var attempt = 1; attempt <= 3; attempt++) {
+    try {
+      var r = await fetch(_VER_URL + '?t=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.json();
+    } catch (e) {
+      if (attempt >= 3) return null;
+      await new Promise(function(res) { setTimeout(res, 800 * attempt); });
+    }
+  }
+  return null;
+}
+
+function _parseCache(cached) {
+  if (!cached || !cached.data) return null;
+  try { return { sig: cached.sig, D: JSON.parse(cached.data) }; }
+  catch (e) { return null; }
+}
+
+async function loadPayload(onProgress, onRetry, onStage) {
+  // v3.1: 版本检查 → 命中缓存免下载; 返回 {D, fromCache, ver}
+  var ver = await fetchVersion();
+  var pc = _parseCache(await idbGet(_CACHE_KEY));
+  if (pc && pc.sig && ver && pc.sig === ver.sig) {
+    if (onStage) onStage('版本一致, 使用本地缓存, 免下载...');
+    return { D: pc.D, fromCache: true, ver: ver };
+  }
+  if (!ver && pc) {
+    // 降级: 版本文件拉不到但有缓存 → 直接用缓存 (可能非最新, 可稍后点“刷新数据”重试)
+    if (onStage) onStage('版本检查失败, 使用本地缓存...');
+    return { D: pc.D, fromCache: true, ver: null };
+  }
+  if (onStage) onStage('正在下载数据...');
+  var text = await fetchPayload(onProgress, onRetry);
+  if (ver && ver.sig) idbSet(_CACHE_KEY, { sig: ver.sig, data: text, ts: Date.now() });
+  return { D: JSON.parse(text), fromCache: false, ver: ver };
 }
 
 async function deriveKey(pw, saltB64) {
@@ -176,12 +256,13 @@ async function unlock() {
   if (!pw) { err.textContent = '请输入密码'; return; }
   try {
     var dl = $('dl');
-    dl.textContent = '正在下载数据...';
-    var D = await fetchPayload(
+    dl.textContent = '检查数据版本...';
+    var r = await loadPayload(
       function(loaded, total) { dl.textContent = fmtPct(loaded, total); },
-      function(n) { dl.textContent = '网络中断, 自动重试 ' + n + '/2 ...'; });
-    dl.textContent = '数据下载完成, 正在解密...';
-    var html = await decryptPayload(D, pw);
+      function(n) { dl.textContent = '网络中断, 自动重试 ' + n + '/2 ...'; },
+      function(s) { dl.textContent = s; });
+    dl.textContent = (r.fromCache ? '使用本地缓存' : '数据下载完成') + ', 正在解密...';
+    var html = await decryptPayload(r.D, pw);
     _pwKeep = pw;      // 解锁成功后暂存, 供后续刷新 (仅本窗口存活)
     showContent(html);
   } catch (e) {
@@ -197,11 +278,13 @@ async function doRefresh() {
   if (!_pwKeep) return;
   var btn = $('refreshBtn');
   btn.classList.add('loading');
-  tip('正在下载最新数据...', '');
+  tip('检查数据更新...', '');
   try {
-    var D = await fetchPayload(function(loaded, total) { tip(fmtPct(loaded, total)); });
-    tip('数据下载完成, 正在解密...', '');
-    var html = await decryptPayload(D, _pwKeep);
+    var r = await loadPayload(function(loaded, total) { tip(fmtPct(loaded, total)); },
+      null,
+      function(s) { tip(s, ''); });
+    tip('正在解密...', '');
+    var html = await decryptPayload(r.D, _pwKeep);
     // 记滚动位置 (页面在 iframe 内)
     var f = $('frame');
     var sy = 0;
@@ -209,7 +292,9 @@ async function doRefresh() {
     showContent(html);
     try { if (sy) f.contentWindow.scrollTo(0, sy); } catch (e) {}
     var st = f.contentDocument ? (f.contentDocument.title || '') : '';
-    tip('已更新到最新数据 (' + new Date().toLocaleTimeString() + ')', 'ok');
+    tip(r.fromCache
+        ? ('已使用本地缓存 (数据发布于 ' + ((r.ver && r.ver.ts) || '未知时间') + ')')
+        : ('已更新到最新数据 (' + new Date().toLocaleTimeString() + ')'), 'ok');
     setTimeout(function() { tip('', '', false); }, 4000);
   } catch (e) {
     var m = String(e);
