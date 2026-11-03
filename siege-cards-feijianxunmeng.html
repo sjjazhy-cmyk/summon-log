@@ -305,6 +305,29 @@ async function doRefresh() {
   btn.classList.remove('loading');
 }
 
+// v3.3 (2026-11-03): 静默版本检查 — 供 iframe 内页的开战倒计时监控在结束后调用。
+// 只拉百字节级版本文件: 与本地缓存 sig 一致 → 'SAME' (不动正文, 零打扰);
+// 不一致 → doRefresh() 热更新 iframe → 'NEW'; 失败 → 'ERR' (调用方可稍后重试)。
+// 数据链路: 插件(倒计时结束采集) → 计划任务(发布上传) → 此处检出新版自动更新。
+var _quietBusy = false;
+async function quietCheck() {
+  if (!_pwKeep) return 'LOCKED';
+  if (_quietBusy) return 'BUSY';
+  _quietBusy = true;
+  try {
+    var ver = await fetchVersion();
+    if (!ver || !ver.sig) return 'ERR';
+    var pc = _parseCache(await idbGet(_CACHE_KEY));
+    if (pc && pc.sig === ver.sig) return 'SAME';
+    await doRefresh();
+    return 'NEW';
+  } catch (e) {
+    return 'ERR';
+  } finally {
+    _quietBusy = false;
+  }
+}
+
 $('pw').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') unlock();
 });
